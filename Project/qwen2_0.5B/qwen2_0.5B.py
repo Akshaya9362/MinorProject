@@ -8,6 +8,7 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from bert_score import score as bert_score
 import nltk
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from rouge_score import rouge_scorer  # NEW
 
 # ========================
 # NLTK SETUP
@@ -32,7 +33,6 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",     # automatically uses MPS if available
     dtype=torch.float16    # avoids deprecation warning
 )
-
 
 # ========================
 # LOAD DOCUMENTS
@@ -65,7 +65,6 @@ def retrieve(query, k=3):
 # ========================
 # RAG FUNCTION (Local Qwen)
 # ========================
-
 def rag_answer_online(question, k=3, max_new_tokens=100):
     # Retrieve top-k documents
     retrieved_docs = retrieve(question, k)
@@ -79,7 +78,7 @@ def rag_answer_online(question, k=3, max_new_tokens=100):
     answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
     
     return answer, retrieved_docs
- 
+
 # ========================
 # TEST RUN
 # ========================
@@ -93,6 +92,9 @@ if __name__ == "__main__":
     ]
     k = 3  # top-k retrieved verses
     results = []
+
+    # ROUGE scorer init
+    scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
 
     for q in questions:
         answer, retrieved_docs = rag_answer_online(q, k=k)
@@ -117,13 +119,22 @@ if __name__ == "__main__":
         bert_f1 = max(F1_list)
         print("BERTScore F1 (max over top-k):", bert_f1)
 
+        # ROUGE SCORE
+        rouge_f1_list = []
+        for ref in retrieved_docs:
+            scores = scorer.score(ref, answer)
+            rouge_f1_list.append(scores['rougeL'].fmeasure)
+        rouge_f1 = max(rouge_f1_list)
+        print("ROUGE-L F1 (max over top-k):", rouge_f1)
+
         # Save results for CSV
         results.append({
             "question": q,
             "generated_answer": answer,
             "reference_statements": " | ".join(retrieved_docs),
             "bleu_score": bleu,
-            "bert_f1": bert_f1
+            "bert_f1": bert_f1,
+            "rougeL_f1": rouge_f1
         })
 
         print("="*80)
@@ -152,7 +163,10 @@ for _, row in df_results.iterrows():
     elements.append(Paragraph(f"Q: {row['question']}", styles['Heading3']))
     elements.append(Paragraph(f"A: {row['generated_answer']}", styles['Normal']))
     elements.append(Paragraph(f"References: {row['reference_statements']}", styles['Normal']))
-    elements.append(Paragraph(f"BLEU: {row['bleu_score']:.4f}, BERT F1: {row['bert_f1']:.4f}", styles['Normal']))
+    elements.append(Paragraph(
+        f"BLEU: {row['bleu_score']:.4f}, BERT F1: {row['bert_f1']:.4f}, ROUGE-L F1: {row['rougeL_f1']:.4f}",
+        styles['Normal']
+    ))
     elements.append(Spacer(1, 12))  # gap between questions
 
 # Build PDF
