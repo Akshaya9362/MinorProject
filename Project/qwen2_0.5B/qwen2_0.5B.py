@@ -6,9 +6,9 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from bert_score import score as bert_score
+from rouge import Rouge
 import nltk
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from rouge_score import rouge_scorer  # NEW
 
 # ========================
 # NLTK SETUP
@@ -30,8 +30,8 @@ model_name = "Qwen/Qwen2-0.5B"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
-    device_map="auto",     # automatically uses MPS if available
-    dtype=torch.float16    # avoids deprecation warning
+    device_map="auto",
+    dtype=torch.float16
 )
 
 # ========================
@@ -66,17 +66,12 @@ def retrieve(query, k=3):
 # RAG FUNCTION (Local Qwen)
 # ========================
 def rag_answer_online(question, k=3, max_new_tokens=100):
-    # Retrieve top-k documents
     retrieved_docs = retrieve(question, k)
     context = "\n".join(retrieved_docs)
-    
     prompt = f"Answer the question using ONLY the context below.\n\nContext:\n{context}\n\nQuestion: {question}"
-    
-    # Tokenize and generate locally
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     outputs = model.generate(**inputs, max_new_tokens=max_new_tokens)
     answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    
     return answer, retrieved_docs
 
 # ========================
@@ -90,11 +85,11 @@ if __name__ == "__main__":
         "What is the purpose of performing one's duties?",
         "How can one attain enlightenment according to Krishna?"
     ]
-    k = 3  # top-k retrieved verses
+    k = 3
     results = []
 
-    # ROUGE scorer init
-    scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
+    rouge = Rouge()
+    smooth_fn = SmoothingFunction().method1
 
     for q in questions:
         answer, retrieved_docs = rag_answer_online(q, k=k)
@@ -105,7 +100,6 @@ if __name__ == "__main__":
         # BLEU SCORE
         reference = [doc.split() for doc in retrieved_docs]
         candidate = answer.split()
-        smooth_fn = SmoothingFunction().method1
         bleu = sentence_bleu(reference, candidate, smoothing_function=smooth_fn)
         print("BLEUscore:", bleu)
 
@@ -120,12 +114,9 @@ if __name__ == "__main__":
         print("BERTScore F1 (max over top-k):", bert_f1)
 
         # ROUGE SCORE
-        rouge_f1_list = []
-        for ref in retrieved_docs:
-            scores = scorer.score(ref, answer)
-            rouge_f1_list.append(scores['rougeL'].fmeasure)
-        rouge_f1 = max(rouge_f1_list)
-        print("ROUGE-L F1 (max over top-k):", rouge_f1)
+        rouge_scores = rouge.get_scores(answer, " ".join(retrieved_docs))
+        rouge_l_f = rouge_scores[0]['rouge-l']['f']
+        print("ROUGE-L F1:", rouge_l_f)
 
         # Save results for CSV
         results.append({
@@ -134,7 +125,7 @@ if __name__ == "__main__":
             "reference_statements": " | ".join(retrieved_docs),
             "bleu_score": bleu,
             "bert_f1": bert_f1,
-            "rougeL_f1": rouge_f1
+            "rouge_l_f1": rouge_l_f
         })
 
         print("="*80)
@@ -156,18 +147,15 @@ elements = []
 
 # Title
 elements.append(Paragraph("RAG(QWEN2_0.5B) Evaluation Results - Qwen Local", styles['Heading1']))
-elements.append(Spacer(1, 12))  # small gap
+elements.append(Spacer(1, 12))
 
 # Add each Q/A block
 for _, row in df_results.iterrows():
     elements.append(Paragraph(f"Q: {row['question']}", styles['Heading3']))
     elements.append(Paragraph(f"A: {row['generated_answer']}", styles['Normal']))
     elements.append(Paragraph(f"References: {row['reference_statements']}", styles['Normal']))
-    elements.append(Paragraph(
-        f"BLEU: {row['bleu_score']:.4f}, BERT F1: {row['bert_f1']:.4f}, ROUGE-L F1: {row['rougeL_f1']:.4f}",
-        styles['Normal']
-    ))
-    elements.append(Spacer(1, 12))  # gap between questions
+    elements.append(Paragraph(f"BLEU: {row['bleu_score']:.4f}, BERT F1: {row['bert_f1']:.4f}, ROUGE-L F1: {row['rouge_l_f1']:.4f}", styles['Normal']))
+    elements.append(Spacer(1, 12))
 
 # Build PDF
 doc.build(elements)
